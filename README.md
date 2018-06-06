@@ -2,8 +2,8 @@
 
 Make TYPO3 Doctrine dbal available in TYPO3 7.6 (it's a backport of the v8.7 code)
 
-This extension is meant to be uses with TYPO3 7.6. If you are using TYPO3 8 or later,
-you have all this functionality alreay in core.
+This extension is meant to be used with TYPO3 7.6. If you are using TYPO3 8 or later,
+you have all this functionality already in core.
 
 ## Installation
 
