@@ -1,0 +1,19 @@
+{
+	"name": "macopedia/doctrine-dbal",
+	"type": "typo3-cms-extension",
+	"description": "Make TYPO3 Doctrine dbal available in TYPO3 7.6 (it's a backport of the v8.7 code)",
+	"homepage": "https://typo3.org",
+	"license": ["GPL-2.0+"],
+	"require": {
+		"php": ">=7.0.0 <=7.2.99",
+		"doctrine/dbal": "~2.5.4",
+		"doctrine/instantiator": "~1.0.4",
+		"typo3/cms-core": "*"
+	},
+	"autoload": {
+		"psr-4": {
+			"Macopedia\\DoctrineDbal\\": "Classes/",
+			"TYPO3\\CMS\\Core\\Database\\": "Classes/Database/"
+		}
+	}
+}
