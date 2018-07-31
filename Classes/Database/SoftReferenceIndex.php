@@ -14,12 +14,7 @@ namespace TYPO3\CMS\Core\Database;
  * The TYPO3 project - inspiring people to share!
  */
 
-use TYPO3\CMS\Core\Database\Query\Restriction\BackendWorkspaceRestriction;
-use TYPO3\CMS\Core\Database\Query\Restriction\DeletedRestriction;
-use TYPO3\CMS\Core\LinkHandling\LinkService;
-use TYPO3\CMS\Core\Resource\File;
 use TYPO3\CMS\Core\Utility\GeneralUtility;
-use TYPO3\CMS\Core\Utility\PathUtility;
 use TYPO3\CMS\Frontend\Service\TypoLinkCodecService;
 
 /**
@@ -64,9 +59,11 @@ use TYPO3\CMS\Frontend\Service\TypoLinkCodecService;
  *
  * - 'substitute' : A full field value targeted for manual substitution (for import /export features)
  * - 'notify' : Just report if a value is found, nothing more.
- * - 'images' : HTML <img> tags for RTE images
+ * - 'images' : HTML <img> tags for RTE images / images from fileadmin/
  * - 'typolink' : references to page id or file, possibly with anchor/target, possibly commaseparated list.
  * - 'typolink_tag' : As typolink, but searching for <link> tag to encapsulate it.
+ * - 'TSconfig' processing (filerefs? Domains? what do we know...)
+ * - 'TStemplate' : freetext references to "fileadmin/" files.
  * - 'email' : Email highlight
  * - 'url' : URL highlights (with a scheme)
  */
@@ -100,7 +97,7 @@ class SoftReferenceIndex
      * @param string $spKey The softlink parser key. This is only interesting if more than one parser is grouped in the same class. That is the case with this parser.
      * @param array $spParams Parameters of the softlink parser. Basically this is the content inside optional []-brackets after the softref keys. Parameters are exploded by ";
      * @param string $structurePath If running from inside a FlexForm structure, this is the path of the tag.
-     * @return array|bool Result array on positive matches, see description above. Otherwise FALSE
+     * @return array Result array on positive matches, see description above. Otherwise FALSE
      */
     public function findRef($table, $field, $uid, $content, $spKey, $spParams, $structurePath = '')
     {
@@ -168,7 +165,7 @@ class SoftReferenceIndex
     /**
      * Finding image tags in the content.
      * All images that are not from external URLs will be returned with an info text
-     * Will only return files in uploads/ folders which are prefixed with "RTEmagic[C|P]_" for substitution
+     * Will only return files in fileadmin/ and files in uploads/ folders which are prefixed with "RTEmagic[C|P]_" for substitution
      * Any "clear.gif" images are ignored.
      *
      * @param string $content The input content to analyse
@@ -195,8 +192,8 @@ class SoftReferenceIndex
                     $tokenID = $this->makeTokenID($k);
                     $elements[$k] = [];
                     $elements[$k]['matchString'] = $v;
-                    // If the image seems to be an RTE image, then proceed to set up substitution token:
-                    if (GeneralUtility::isFirstPartOfStr($srcRef, 'uploads/') && preg_match('/^RTEmagicC_/', PathUtility::basename($srcRef))) {
+                    // If the image seems to be from fileadmin/ folder or an RTE image, then proceed to set up substitution token:
+                    if (GeneralUtility::isFirstPartOfStr($srcRef, $this->fileAdminDir . '/') || GeneralUtility::isFirstPartOfStr($srcRef, 'uploads/') && preg_match('/^RTEmagicC_/', basename($srcRef))) {
                         // Token and substitute value:
                         // Make sure the value we work on is found and will get substituted in the content (Very important that the src-value is not DeHSC'ed)
                         if (strstr($splitContent[$k], $attribs[0]['src'])) {
@@ -267,7 +264,7 @@ class SoftReferenceIndex
 
     /**
      * TypoLink tag processing.
-     * Will search for <link ...> and <a> tags in the content string and process any found.
+     * Will search for <link ...> tags in the content string and process any found.
      *
      * @param string $content The input content to analyse
      * @param array $spParams Parameters set for the softref parser key in TCA/columns
@@ -278,51 +275,14 @@ class SoftReferenceIndex
     {
         // Parse string for special TYPO3 <link> tag:
         $htmlParser = GeneralUtility::makeInstance(\TYPO3\CMS\Core\Html\HtmlParser::class);
-        $linkService = GeneralUtility::makeInstance(LinkService::class);
-        $linkTags = $htmlParser->splitTags('a', $content);
+        $linkTags = $htmlParser->splitTags('link', $content);
         // Traverse result:
         $elements = [];
-        foreach ($linkTags as $key => $foundValue) {
-            if ($key % 2) {
-                if (preg_match('/href="([^"]+)"/', $foundValue, $matches)) {
-                    try {
-                        $linkDetails = $linkService->resolve($matches[1]);
-                        if ($linkDetails['type'] === LinkService::TYPE_FILE && preg_match('/file\?uid=(\d+)/', $matches[1], $fileIdMatch)) {
-                            $token = $this->makeTokenID($key);
-                            $linkTags[$key] = str_replace($matches[1], '{softref:' . $token . '}', $linkTags[$key]);
-                            $elements[$key]['subst'] = [
-                                'type' => 'db',
-                                'recordRef' => 'sys_file:' . $fileIdMatch[1],
-                                'tokenID' => $token,
-                                'tokenValue' => 'file:' . ($linkDetails['file'] instanceof File ? $linkDetails['file']->getUid() : $fileIdMatch[1])
-                            ];
-                        } elseif ($linkDetails['type'] === LinkService::TYPE_PAGE && preg_match('/page\?uid=(\d+)#?(\d+)?/', $matches[1], $pageAndAnchorMatches)) {
-                            $token = $this->makeTokenID($key);
-                            $linkTags[$key] = str_replace($matches[1], '{softref:' . $token . '}', $linkTags[$key]);
-                            $elements[$key]['subst'] = [
-                                'type' => 'db',
-                                'recordRef' => 'pages:' . $linkDetails['pageuid'] . (isset($pageAndAnchorMatches[2]) ? '#c' . $pageAndAnchorMatches[2] : ''),
-                                'tokenID' => $token,
-                                'tokenValue' => $linkDetails['pageuid'] . (isset($pageAndAnchorMatches[2]) ? '#c' . $pageAndAnchorMatches[2] : '')
-                            ];
-                        } elseif ($linkDetails['type'] === LinkService::TYPE_URL) {
-                            $token = $this->makeTokenID($key);
-                            $linkTags[$key] = str_replace($matches[1], '{softref:' . $token . '}', $linkTags[$key]);
-                            $elements[$key]['subst'] = [
-                                'type' => 'external',
-                                'tokenID' => $token,
-                                'tokenValue' => $linkDetails['url']
-                            ];
-                        }
-                    } catch (\Exception $e) {
-                        // skip invalid links
-                    }
-                } else {
-                    // keep the legacy code for now
-                    $typolinkValue = preg_replace('/<LINK[[:space:]]+/i', '', substr($foundValue, 0, -1));
-                    $tLP = $this->getTypoLinkParts($typolinkValue);
-                    $linkTags[$k] = '<LINK ' . $this->setTypoLinkPartsElement($tLP, $elements, $typolinkValue, $k) . '>';
-                }
+        foreach ($linkTags as $k => $foundValue) {
+            if ($k % 2) {
+                $typolinkValue = preg_replace('/<LINK[[:space:]]+/i', '', substr($foundValue, 0, -1));
+                $tLP = $this->getTypoLinkParts($typolinkValue);
+                $linkTags[$k] = '<LINK ' . $this->setTypoLinkPartsElement($tLP, $elements, $typolinkValue, $k) . '>';
             }
         }
         // Return output:
@@ -336,8 +296,6 @@ class SoftReferenceIndex
     }
 
     /**
-     * Marcin: function copy from TYPO3 7.6 SoftReferenceIndex class file
-     *
      * Processing the content expected from a TypoScript template
      * This content includes references to files in fileadmin/ folders and file references in HTML tags like <img src="">, <a href=""> and <form action="">
      *
@@ -412,8 +370,6 @@ class SoftReferenceIndex
     }
 
     /**
-     * Marcin: function copy from TYPO3 7.6 SoftReferenceIndex class file
-     *
      * Processes possible references inside of Page and User TSconfig fields.
      * Currently this only includes file references to fileadmin/ but in fact there are currently no properties that supports such references.
      *
@@ -445,6 +401,7 @@ class SoftReferenceIndex
      */
     public function findRef_email($content, $spParams)
     {
+        $resultArray = [];
         // Email:
         $parts = preg_split('/([^[:alnum:]]+)([A-Za-z0-9\\._-]+[@][A-Za-z0-9\\._-]+[\\.].[A-Za-z0-9]+)/', ' ' . $content . ' ', 10000, PREG_SPLIT_DELIM_CAPTURE);
         foreach ($parts as $idx => $value) {
@@ -481,8 +438,9 @@ class SoftReferenceIndex
      */
     public function findRef_url($content, $spParams)
     {
-        // URLs
-        $parts = preg_split('/([^[:alnum:]"\']+)((https?|ftp):\\/\\/[^[:space:]"\'<>]*)([[:space:]])/', ' ' . $content . ' ', 10000, PREG_SPLIT_DELIM_CAPTURE);
+        $resultArray = [];
+        // Fileadmin files:
+        $parts = preg_split('/([^[:alnum:]"\']+)((http|ftp):\\/\\/[^[:space:]"\'<>]*)([[:space:]])/', ' ' . $content . ' ', 10000, PREG_SPLIT_DELIM_CAPTURE);
         foreach ($parts as $idx => $value) {
             if ($idx % 5 == 3) {
                 unset($parts[$idx]);
@@ -520,11 +478,12 @@ class SoftReferenceIndex
      */
     public function findRef_extension_fileref($content, $spParams)
     {
-        // Files starting with EXT:
+        $resultArray = [];
+        // Fileadmin files:
         $parts = preg_split('/([^[:alnum:]"\']+)(EXT:[[:alnum:]_]+\\/[^[:space:]"\',]*)/', ' ' . $content . ' ', 10000, PREG_SPLIT_DELIM_CAPTURE);
         foreach ($parts as $idx => $value) {
             if ($idx % 3 == 2) {
-                $this->makeTokenID($idx);
+                $tokenID = $this->makeTokenID($idx);
                 $elements[$idx] = [];
                 $elements[$idx]['matchString'] = $value;
             }
@@ -544,7 +503,6 @@ class SoftReferenceIndex
      * Helper functions
      *
      *************************/
-
     /**
      * Searches the content for a reference to a file in "fileadmin/".
      * When a match is found it will get substituted with a token.
@@ -601,6 +559,13 @@ class SoftReferenceIndex
         // we define various keys below, "url" might be misleading
         unset($finalTagParts['url']);
 
+        if (stripos(rawurldecode(trim($link_param)), 'phar://') === 0) {
+            throw new \RuntimeException(
+                'phar scheme not allowed as soft reference target',
+                1530030672
+            );
+        }
+
         // Parse URL:
         $pU = @parse_url($link_param);
 
@@ -610,11 +575,6 @@ class SoftReferenceIndex
             $finalTagParts['LINK_TYPE'] = 'mailto';
             $finalTagParts['url'] = trim($link_param);
             return $finalTagParts;
-        }
-
-        if ($pU['scheme'] === 't3' && $pU['host'] === LinkService::TYPE_RECORD) {
-            $finalTagParts['LINK_TYPE'] = LinkService::TYPE_RECORD;
-            $finalTagParts['url'] = $link_param;
         }
 
         list($linkHandlerKeyword, $linkHandlerValue) = explode(':', trim($link_param), 2);
@@ -740,6 +700,29 @@ class SoftReferenceIndex
                         // This is a link to a folder...
                         return $content;
                     }
+
+                    // Process files found in fileadmin directory:
+                } elseif (!$tLP['query']) {
+                    // We will not process files which has a query added to it. That will look like a script we don't want to move.
+                    // File must be inside fileadmin/
+                    if (GeneralUtility::isFirstPartOfStr($tLP['filepath'], $this->fileAdminDir . '/')) {
+                        // Set up the basic token and token value for the relative file:
+                        $elements[$tokenID . ':' . $idx]['subst'] = [
+                            'type' => 'file',
+                            'relFileName' => $tLP['filepath'],
+                            'tokenID' => $tokenID,
+                            'tokenValue' => $tLP['filepath']
+                        ];
+                        // Depending on whether the file exists or not we will set the
+                        $absPath = GeneralUtility::getFileAbsFileName(PATH_site . $tLP['filepath']);
+                        if (!@is_file($absPath)) {
+                            $elements[$tokenID . ':' . $idx]['error'] = 'File does not exist!';
+                        }
+                        // Output content will be the token instead
+                        $content = '{softref:' . $tokenID . '}';
+                    } else {
+                        return $content;
+                    }
                 } else {
                     return $content;
                 }
@@ -782,16 +765,6 @@ class SoftReferenceIndex
                     }
                 }
                 break;
-            case LinkService::TYPE_RECORD:
-                $elements[$tokenID . ':' . $idx]['subst'] = [
-                    'type' => 'db',
-                    'recordRef' => $tLP['table'] . ':' . $tLP['uid'],
-                    'tokenID' => $tokenID,
-                    'tokenValue' => $content,
-                ];
-
-                $content = '{softref:' . $tokenID . '}';
-                break;
             default:
                 $linkHandlerFound = false;
                 list($linkHandlerFound, $tLP, $content, $newElements) = $this->emitSetTypoLinkPartsElement($linkHandlerFound, $tLP, $content, $elements, $idx, $tokenID);
@@ -814,27 +787,13 @@ class SoftReferenceIndex
     /**
      * Look up and return page uid for alias
      *
-     * @param string $link_param Page alias string value
+     * @param int $link_param Page alias string value
      * @return int Page uid corresponding to alias value.
      */
     public function getPageIdFromAlias($link_param)
     {
-        $queryBuilder = GeneralUtility::makeInstance(ConnectionPool::class)->getQueryBuilderForTable('pages');
-        $queryBuilder->getRestrictions()
-            ->removeAll()
-            ->add(GeneralUtility::makeInstance(DeletedRestriction::class))
-            ->add(GeneralUtility::makeInstance(BackendWorkspaceRestriction::class));
-
-        $pageUid = $queryBuilder->select('uid')
-            ->from('pages')
-            ->where(
-                $queryBuilder->expr()->eq('alias', $queryBuilder->createNamedParameter($link_param, \PDO::PARAM_STR))
-            )
-            ->setMaxResults(1)
-            ->execute()
-            ->fetchColumn(0);
-
-        return (int)$pageUid;
+        $pRec = \TYPO3\CMS\Backend\Utility\BackendUtility::getRecordsByField('pages', 'alias', $link_param);
+        return $pRec[0]['uid'];
     }
 
     /**
@@ -865,7 +824,7 @@ class SoftReferenceIndex
      */
     protected function emitGetTypoLinkParts($linkHandlerFound, $finalTagParts, $linkHandlerKeyword, $linkHandlerValue)
     {
-        return $this->getSignalSlotDispatcher()->dispatch(static::class, 'getTypoLinkParts', [$linkHandlerFound, $finalTagParts, $linkHandlerKeyword, $linkHandlerValue]);
+        return $this->getSignalSlotDispatcher()->dispatch(get_class($this), 'getTypoLinkParts', [$linkHandlerFound, $finalTagParts, $linkHandlerKeyword, $linkHandlerValue]);
     }
 
     /**
@@ -879,6 +838,6 @@ class SoftReferenceIndex
      */
     protected function emitSetTypoLinkPartsElement($linkHandlerFound, $tLP, $content, $elements, $idx, $tokenID)
     {
-        return $this->getSignalSlotDispatcher()->dispatch(static::class, 'setTypoLinkPartsElement', [$linkHandlerFound, $tLP, $content, $elements, $idx, $tokenID, $this]);
+        return $this->getSignalSlotDispatcher()->dispatch(get_class($this), 'setTypoLinkPartsElement', [$linkHandlerFound, $tLP, $content, $elements, $idx, $tokenID, $this]);
     }
 }
